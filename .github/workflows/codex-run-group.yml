@@ -1,0 +1,104 @@
+name: Codex Run Group
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_group_id:
+        description: Supabase run_groups.id (UUID)
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    outputs:
+      items: ${{ steps.get.outputs.items }}
+    steps:
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Fetch run items from Supabase
+        id: get
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE }}
+          RUN_GROUP: ${{ github.event.inputs.run_group_id }}
+        run: |
+          set -euo pipefail
+          echo "Fetching items for group: $RUN_GROUP"
+          RESP=$(curl -fsS \
+            "$SUPABASE_URL/rest/v1/run_items?select=id,agent,repo,base_branch,branch,goal&run_group_id=eq.$RUN_GROUP" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE" \
+            -H "Accept: application/json")
+          echo "::group::Supabase response"; echo "$RESP" | jq .; echo "::endgroup::"
+          COUNT=$(echo "$RESP" | jq 'length')
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No run_items found for $RUN_GROUP"; exit 1; fi
+          echo "items=$(echo "$RESP" | jq -c '.')" >> "$GITHUB_OUTPUT"
+
+  run:
+    needs: fetch
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        item: ${{ fromJson(needs.fetch.outputs.items) }}
+    steps:
+      - name: Show matrix item
+        run: echo '${{ toJson(matrix.item) }}'
+
+      - name: GitHub App token
+        id: app-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.CODEX_GH_APP_ID }}
+          private_key: ${{ secrets.CODEX_GH_APP_PRIVATE_KEY }}
+
+      - name: Clone target repo
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ matrix.item.repo }}
+        run: |
+          set -euo pipefail
+          gh repo clone "$REPO" repo
+
+      - name: Create branch & commit patch
+        working-directory: repo
+        env:
+          BASE: ${{ matrix.item.base_branch }}
+          BRANCH: ${{ matrix.item.branch }}
+          GOAL: ${{ matrix.item.goal }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$BASE" --depth=1
+          git checkout -b "$BRANCH" "origin/$BASE"
+          git config user.name "codex-bot"
+          git config user.email "bot@codex.local"
+          echo "$GOAL" > "codex-${{ matrix.item.id }}.txt"   # placeholder change
+          git add .
+          git commit -m "codex: $GOAL"
+
+      - name: Push branch
+        working-directory: repo
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ matrix.item.branch }}
+        run: |
+          set -euo pipefail
+          git push -u origin "$BRANCH"
+
+      - name: Open PR
+        working-directory: repo
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BASE: ${{ matrix.item.base_branch }}
+          BRANCH: ${{ matrix.item.branch }}
+          GOAL: ${{ matrix.item.goal }}
+        run: |
+          set -euo pipefail
+          gh pr create --base "$BASE" --head "$BRANCH" \
+            --title "codex: $GOAL" \
+            --body "- [ ] typecheck\n- [ ] tests\n- [ ] preview"
