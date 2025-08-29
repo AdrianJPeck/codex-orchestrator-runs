@@ -7,7 +7,7 @@ on:
         description: Supabase run_groups.id (UUID)
         required: true
 
-# We use an App token for repo writes; GITHUB_TOKEN only needs read.
+# Using an App token for writes; repo token only needs read.
 permissions:
   contents: read
 
@@ -51,7 +51,6 @@ jobs:
       - name: Show matrix item
         run: echo '${{ toJson(matrix.item) }}'
 
-      # Sanity check that the private key is a real PEM
       - name: Validate PEM format
         run: |
           echo "${{ secrets.CODEX_GH_APP_PRIVATE_KEY }}" | head -n1 | grep -q "BEGIN RSA PRIVATE KEY" || {
@@ -59,15 +58,13 @@ jobs:
             exit 1;
           }
 
-      # Mint an installation token for the specific target repo (from matrix)
       - name: GitHub App token
         id: app-token
         uses: tibdex/github-app-token@v2
         with:
           app_id: ${{ secrets.CODEX_GH_APP_ID }}
           private_key: ${{ secrets.CODEX_GH_APP_PRIVATE_KEY }}
-          installation_retrieval_mode: repository
-          installation_retrieval_repository: ${{ matrix.item.repo }}
+          installation_id: 83374764
 
       - name: Confirm gh CLI
         run: gh --version
@@ -93,7 +90,7 @@ jobs:
           git checkout -b "$BRANCH" "origin/$BASE"
           git config user.name "codex-bot"
           git config user.email "bot@codex.local"
-          # Placeholder change (replace with agent-generated patch)
+          # Placeholder change (swap with agent-generated patch later)
           echo "$GOAL" > "codex-${ITEM_ID}.txt"
           git add .
           git commit -m "codex: $GOAL"
@@ -102,9 +99,12 @@ jobs:
         working-directory: repo
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ matrix.item.repo }}
           BRANCH: ${{ matrix.item.branch }}
         run: |
           set -euo pipefail
+          # ensure remote uses the app token for push
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
           git push -u origin "$BRANCH"
 
       - name: Open PR
