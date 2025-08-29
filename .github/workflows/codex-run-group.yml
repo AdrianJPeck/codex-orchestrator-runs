@@ -57,7 +57,7 @@ jobs:
             exit 1;
           }
 
-      # v2 requires retrieval mode + payload (id or repository). Using your known installation_id.
+      # Correct tibdex v2 inputs — use your installation ID
       - name: GitHub App token
         id: app-token
         uses: tibdex/github-app-token@v2
@@ -91,7 +91,8 @@ jobs:
           git checkout -b "$BRANCH" "origin/$BASE"
           git config user.name "codex-bot"
           git config user.email "bot@codex.local"
-          echo "$GOAL" > "codex-${ITEM_ID}.txt"   # placeholder: replace with agent patch later
+          # Placeholder change (swap with agent-generated patch later)
+          echo "$GOAL" > "codex-${ITEM_ID}.txt"
           git add .
           git commit -m "codex: $GOAL"
 
@@ -103,6 +104,7 @@ jobs:
           BRANCH: ${{ matrix.item.branch }}
         run: |
           set -euo pipefail
+          # ensure remote uses the app token for push
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
           git push -u origin "$BRANCH"
 
