@@ -7,6 +7,7 @@ on:
         description: Supabase run_groups.id (UUID)
         required: true
 
+# We use an App token for repo writes; GITHUB_TOKEN only needs read.
 permissions:
   contents: read
 
@@ -50,12 +51,26 @@ jobs:
       - name: Show matrix item
         run: echo '${{ toJson(matrix.item) }}'
 
+      # Sanity check that the private key is a real PEM
+      - name: Validate PEM format
+        run: |
+          echo "${{ secrets.CODEX_GH_APP_PRIVATE_KEY }}" | head -n1 | grep -q "BEGIN RSA PRIVATE KEY" || {
+            echo "ERROR: CODEX_GH_APP_PRIVATE_KEY is not a PEM (missing BEGIN header).";
+            exit 1;
+          }
+
+      # Mint an installation token for the specific target repo (from matrix)
       - name: GitHub App token
         id: app-token
         uses: tibdex/github-app-token@v2
         with:
           app_id: ${{ secrets.CODEX_GH_APP_ID }}
           private_key: ${{ secrets.CODEX_GH_APP_PRIVATE_KEY }}
+          installation_retrieval_mode: repository
+          installation_retrieval_repository: ${{ matrix.item.repo }}
+
+      - name: Confirm gh CLI
+        run: gh --version
 
       - name: Clone target repo
         env:
@@ -71,13 +86,15 @@ jobs:
           BASE: ${{ matrix.item.base_branch }}
           BRANCH: ${{ matrix.item.branch }}
           GOAL: ${{ matrix.item.goal }}
+          ITEM_ID: ${{ matrix.item.id }}
         run: |
           set -euo pipefail
           git fetch origin "$BASE" --depth=1
           git checkout -b "$BRANCH" "origin/$BASE"
           git config user.name "codex-bot"
           git config user.email "bot@codex.local"
-          echo "$GOAL" > "codex-${{ matrix.item.id }}.txt"   # placeholder change
+          # Placeholder change (replace with agent-generated patch)
+          echo "$GOAL" > "codex-${ITEM_ID}.txt"
           git add .
           git commit -m "codex: $GOAL"
 
