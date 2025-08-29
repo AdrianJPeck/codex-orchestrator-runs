@@ -46,9 +46,11 @@ jobs:
       fail-fast: false
       matrix:
         item: ${{ fromJson(needs.fetch.outputs.items) }}
+
     steps:
       - name: Show matrix item
-        run: echo '${{ toJson(matrix.item) }}'
+        run: |
+          echo '${{ toJson(matrix.item) }}'
 
       - name: Validate PEM format
         run: |
@@ -57,7 +59,7 @@ jobs:
             exit 1;
           }
 
-      # Correct tibdex v2 inputs — use your installation ID
+      # 🔑 Create an installation token for your app (tibdex v2 syntax)
       - name: GitHub App token
         id: app-token
         uses: tibdex/github-app-token@v2
@@ -65,37 +67,53 @@ jobs:
           app_id: ${{ secrets.CODEX_GH_APP_ID }}
           private_key: ${{ secrets.CODEX_GH_APP_PRIVATE_KEY }}
           installation_retrieval_mode: id
-          installation_retrieval_payload: 83374764
+          installation_retrieval_payload: 83374764  # your installation_id
 
-      - name: Confirm gh CLI
-        run: gh --version
+      - name: Versions
+        run: |
+          set -x
+          git --version
+          gh --version
 
-      - name: Clone target repo
+      # ✅ Clone the target repo using the App token (avoids 128 from auth)
+      - name: Clone target repo (with app token)
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ matrix.item.repo }}
         run: |
           set -euo pipefail
-          gh repo clone "$REPO" repo
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" repo
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/repo"
 
-      - name: Create branch & commit patch
+      # 🪵 Prepare branch idempotently (no fail if branch already exists)
+      - name: Prepare branch
         working-directory: repo
         env:
           BASE: ${{ matrix.item.base_branch }}
           BRANCH: ${{ matrix.item.branch }}
+        run: |
+          set -euo pipefail
+          set -x
+          git fetch origin "$BASE" --depth=1 || git fetch origin --unshallow
+          # Create or reset local branch to base
+          git checkout -B "$BRANCH" "origin/$BASE"
+
+      # 📝 Commit a placeholder patch (replace with agent patch later)
+      - name: Commit patch
+        working-directory: repo
+        env:
           GOAL: ${{ matrix.item.goal }}
           ITEM_ID: ${{ matrix.item.id }}
         run: |
           set -euo pipefail
-          git fetch origin "$BASE" --depth=1
-          git checkout -b "$BRANCH" "origin/$BASE"
+          set -x
           git config user.name "codex-bot"
           git config user.email "bot@codex.local"
-          # Placeholder change (swap with agent-generated patch later)
           echo "$GOAL" > "codex-${ITEM_ID}.txt"
           git add .
-          git commit -m "codex: $GOAL"
+          git commit -m "codex: $GOAL" || echo "Nothing to commit (maybe already exists)"
 
+      # ⬆️ Push safely (force-with-lease handles reruns)
       - name: Push branch
         working-directory: repo
         env:
@@ -104,11 +122,12 @@ jobs:
           BRANCH: ${{ matrix.item.branch }}
         run: |
           set -euo pipefail
-          # ensure remote uses the app token for push
+          set -x
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
-          git push -u origin "$BRANCH"
+          git push -u origin "$BRANCH" --force-with-lease
 
-      - name: Open PR
+      # 🔎 Only open a PR if there isn't one already
+      - name: Open PR (idempotent)
         working-directory: repo
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -117,6 +136,13 @@ jobs:
           GOAL: ${{ matrix.item.goal }}
         run: |
           set -euo pipefail
+          set -x
+          # Is there already an open PR from this branch?
+          EXISTING=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || true)
+          if [ -n "$EXISTING" ]; then
+            echo "PR #$EXISTING already open for $BRANCH; skipping create."
+            exit 0
+          fi
           gh pr create --base "$BASE" --head "$BRANCH" \
             --title "codex: $GOAL" \
             --body "- [ ] typecheck\n- [ ] tests\n- [ ] preview"
